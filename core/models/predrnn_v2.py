@@ -5,7 +5,7 @@ import torch.nn as nn
 from core.layers.SpatioTemporalLSTMCell_v2 import SpatioTemporalLSTMCell
 import torch.nn.functional as F
 from core.utils.tsne import visualization
-
+from core.data_provider.decouple_metrics import decouple_metrics
 
 class RNN(nn.Module):
     def __init__(self, num_layers, num_hidden, configs):
@@ -67,7 +67,7 @@ class RNN(nn.Module):
 
         for t in range(self.configs.total_length - 1):
 
-            if self.configs.reverse_scheduled_sampling == 1:
+            if self.configs.reverse_scheduled_sampling != 0:
                 # reverse schedule sampling
                 if t == 0:
                     net = frames[:, t]
@@ -111,7 +111,15 @@ class RNN(nn.Module):
             self.visual = 0
 
         decouple_loss = torch.mean(torch.stack(decouple_loss, dim=0))
+
         # [length, batch, channel, height, width] -> [batch, length, height, width, channel]
         next_frames = torch.stack(next_frames, dim=0).permute(1, 0, 3, 4, 2).contiguous()
         loss = self.MSE_criterion(next_frames, frames_tensor[:, 1:]) + self.configs.decouple_beta * decouple_loss
+
+        if self.configs.reverse_scheduled_sampling == 2:
+            global decouple_metrics
+            decouple_metrics['delta_c_avg'] = torch.mean(torch.stack(delta_c_list)).item()
+            decouple_metrics['delta_m_avg'] = torch.mean(torch.stack(delta_m_list)).item()
+            decouple_metrics['decouple_loss'] = decouple_loss.item()
+
         return next_frames, loss

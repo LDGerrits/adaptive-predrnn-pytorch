@@ -50,7 +50,7 @@ class RNN(nn.Module):
 
         for t in range(self.configs.total_length - 1):
             # reverse schedule sampling
-            if self.configs.reverse_scheduled_sampling == 1:
+            if self.configs.reverse_scheduled_sampling != 0:
                 if t == 0:
                     net = frames[:, t]
                 else:

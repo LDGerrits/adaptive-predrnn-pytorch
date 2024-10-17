@@ -20,14 +20,14 @@ python -u run.py \
     --patch_size 4 \
     --layer_norm 0 \
     --decouple_beta 0.1 \
-    --reverse_scheduled_sampling 1 \
-    --r_sampling_step_1 25000 \
-    --r_sampling_step_2 50000 \
-    --r_exp_alpha 2500 \
-    --lr 0.0001 \
+    --reverse_scheduled_sampling 2 \
+    --r_sampling_step_1 333 \
+    --r_sampling_step_2 667 \
+    --r_exp_alpha 133 \
+    --lr 0.001 \
     --batch_size 8 \
-    --max_iterations 80000 \
-    --display_interval 100 \
-    --test_interval 5000 \
-    --snapshot_interval 5000 \
+    --max_iterations 1000 \
+    --display_interval 10 \
+    --test_interval 1000 \
+    --snapshot_interval 1000 \
 #    --pretrained_model ./checkpoints/mnist_predrnn_v2/mnist_model.ckpt

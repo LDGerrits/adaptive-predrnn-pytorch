@@ -9,6 +9,8 @@ from core.data_provider import datasets_factory
 from core.models.model_factory import Model
 from core.utils import preprocess
 import core.trainer as trainer
+from core.data_provider.decouple_metrics import decouple_metrics
+from core.data_provider.training_progress import training_progress
 
 # -----------------------------------------------------------------------------
 parser = argparse.ArgumentParser(description='PyTorch video prediction model - PredRNN')
@@ -127,6 +129,114 @@ def reserve_schedule_sampling_exp(itr):
                                   args.patch_size ** 2 * args.img_channel))
     return real_input_flag
 
+r_eta_momentum = 0.0
+eta_momentum = 0.0
+beta1 = 0.9
+bias_weight = 0.005
+beta3 = 5.0
+beta4 = 1.0
+beta5 = 0.3
+beta6 = 1.0
+samples = 12
+
+def adaptive_reserve_schedule_sampling_exp(itr):
+    global decouple_metrics
+    delta_c_avg = decouple_metrics['delta_c_avg']
+    delta_m_avg = decouple_metrics['delta_m_avg']
+    decouple_loss = decouple_metrics['decouple_loss']
+    
+    global training_progress
+    losses = training_progress['loss']
+    etas = training_progress['eta']
+    r_etas = training_progress['r_eta']
+    delta_c_avgs = training_progress['delta_c_avg']
+    delta_m_avgs = training_progress['delta_m_avg']
+    decouple_losses = training_progress['decouple_loss']
+
+    if itr == 1:
+        r_eta = 0.5
+        eta = 0.5
+    else:
+
+        if itr < args.r_sampling_step_1:
+            eta_bias = 0.5
+        elif itr < args.r_sampling_step_2:
+            eta_bias = 0.5 - (0.5 / (args.r_sampling_step_2 - args.r_sampling_step_1)) * (itr - args.r_sampling_step_1)
+        else:
+            eta_bias = 0.0
+
+        global r_eta_momentum, eta_momentum
+        step_size = 1.0
+        if itr == 2:
+            loss_change = 0.0
+            decouple_change = 0.0
+            eta_change = 0.0
+        else:
+            loss_change = losses[-1] - losses[-2]
+            decouple_change = decouple_losses[-1] - decouple_losses[-2]
+            eta_change = etas[-1] - etas[-2]
+
+        std_m = np.std(delta_m_avgs[-samples:])
+        std_c = np.std(delta_c_avgs[-samples:])
+        std_decouple = np.std(decouple_losses[-samples:])
+
+        eta_bias_pull = bias_weight * (eta_bias - etas[-1]) 
+        eta_momentum = (beta1 * eta_momentum + (1 - beta1) * eta_change) * beta5
+
+        delta_c_addition = std_c * eta_bias * beta3
+        delta_m_addition = -std_m * (1.0 - eta_bias) * beta3
+        decouple_addition = std_decouple * eta_bias * beta4 + eta_bias * decouple_change * beta6
+
+        eta = max(0.0, min(1.0, etas[-1] + step_size * (eta_bias_pull + eta_momentum + decouple_addition + delta_c_addition + delta_m_addition)))
+        r_eta = 1.0 - eta
+
+
+    # afterwards, append every var to list for later analysis
+    training_progress['eta'].append(eta)
+    training_progress['r_eta'].append(r_eta)
+    training_progress['loss'].append(decouple_metrics['loss'])
+    training_progress['delta_c_avg'].append(decouple_metrics['delta_c_avg'])
+    training_progress['delta_m_avg'].append(decouple_metrics['delta_m_avg'])
+    training_progress['decouple_loss'].append(decouple_metrics['decouple_loss'])
+
+    r_random_flip = np.random.random_sample(
+        (args.batch_size, args.input_length - 1))
+    r_true_token = (r_random_flip < r_eta)
+
+    random_flip = np.random.random_sample(
+        (args.batch_size, args.total_length - args.input_length - 1))
+    true_token = (random_flip < eta)
+
+    ones = np.ones((args.img_width // args.patch_size,
+                    args.img_width // args.patch_size,
+                    args.patch_size ** 2 * args.img_channel))
+    zeros = np.zeros((args.img_width // args.patch_size,
+                      args.img_width // args.patch_size,
+                      args.patch_size ** 2 * args.img_channel))
+
+    real_input_flag = []
+    for i in range(args.batch_size):
+        for j in range(args.total_length - 2):
+            if j < args.input_length - 1:
+                if r_true_token[i, j]:
+                    real_input_flag.append(ones)
+                else:
+                    real_input_flag.append(zeros)
+            else:
+                if true_token[i, j - (args.input_length - 1)]:
+                    real_input_flag.append(ones)
+                else:
+                    real_input_flag.append(zeros)
+
+    real_input_flag = np.array(real_input_flag)
+    real_input_flag = np.reshape(real_input_flag,
+                                 (args.batch_size,
+                                  args.total_length - 2,
+                                  args.img_width // args.patch_size,
+                                  args.img_width // args.patch_size,
+                                  args.patch_size ** 2 * args.img_channel))
+    return real_input_flag
+
 
 def schedule_sampling(eta, itr):
     zeros = np.zeros((args.batch_size,
@@ -185,6 +295,15 @@ def train_wrapper(model):
 
         if args.reverse_scheduled_sampling == 1:
             real_input_flag = reserve_schedule_sampling_exp(itr)
+        elif args.reverse_scheduled_sampling == 2:
+
+            # #TODO not sure if I should calculate the loss metrics here or if I should use the metrics of the previous training epoch
+            # #TODO Problem with last suggestion: no metrics available for first epoch
+            # frames_tensor = torch.FloatTensor(frames).to(self.configs.device)
+            # mask_tensor = torch.FloatTensor(mask).to(self.configs.device)
+            # next_frames, loss = model.network(frames_tensor, mask_tensor)
+
+            real_input_flag = adaptive_reserve_schedule_sampling_exp(itr)
         else:
             eta, real_input_flag = schedule_sampling(eta, itr)
 

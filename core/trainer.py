@@ -6,16 +6,44 @@ from skimage.metrics import structural_similarity as compare_ssim
 from core.utils import preprocess, metrics
 import lpips
 import torch
+from core.data_provider.decouple_metrics import decouple_metrics
+from core.data_provider.training_progress import training_progress
+import pandas as pd
 
 loss_fn_alex = lpips.LPIPS(net='alex')
 
+def save_list_to_csv(data, filename):
+    df = pd.DataFrame(data, columns=['Value'])
+    df.to_csv(filename, index=False)
+    print(f'Saved {filename}')
 
 def train(model, ims, real_input_flag, configs, itr):
+    global decouple_metrics
+
     cost = model.train(ims, real_input_flag)
+
     if configs.reverse_input:
+
+        delta_c_avg = 0
+        delta_m_avg = 0
+        decouple_loss = 0
+
+        if configs.reverse_scheduled_sampling == 2:
+            delta_c_avg = decouple_metrics['delta_c_avg']
+            delta_m_avg = decouple_metrics['delta_m_avg']
+            decouple_loss = decouple_metrics['decouple_loss']
+
         ims_rev = np.flip(ims, axis=1).copy()
         cost += model.train(ims_rev, real_input_flag)
         cost = cost / 2
+
+        if configs.reverse_scheduled_sampling == 2:
+            decouple_metrics['delta_c_avg'] = (decouple_metrics['delta_c_avg'] + delta_c_avg) / 2
+            decouple_metrics['delta_m_avg'] = (decouple_metrics['delta_m_avg'] + delta_m_avg) / 2
+            decouple_metrics['decouple_loss']  = (decouple_metrics['decouple_loss'] + decouple_loss) / 2
+
+
+    decouple_metrics['loss'] = cost
 
     if itr % configs.display_interval == 0:
         print(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'itr: ' + str(itr))
@@ -39,7 +67,7 @@ def test(model, test_input_handle, configs, itr):
         lp.append(0)
 
     # reverse schedule sampling
-    if configs.reverse_scheduled_sampling == 1:
+    if configs.reverse_scheduled_sampling != 0:
         mask_input = 1
     else:
         mask_input = configs.input_length
@@ -51,7 +79,7 @@ def test(model, test_input_handle, configs, itr):
          configs.img_width // configs.patch_size,
          configs.patch_size ** 2 * configs.img_channel))
 
-    if configs.reverse_scheduled_sampling == 1:
+    if configs.reverse_scheduled_sampling != 0:
         real_input_flag[:, :configs.input_length - 1, :, :] = 1.0
 
     while (test_input_handle.no_batch_left() == False):
@@ -144,3 +172,11 @@ def test(model, test_input_handle, configs, itr):
     print('lpips per frame: ' + str(np.mean(lp)))
     for i in range(configs.total_length - configs.input_length):
         print(lp[i])
+
+    global training_progress
+    save_list_to_csv(training_progress['loss'], 'loss.csv')
+    save_list_to_csv(training_progress['eta'], 'eta.csv')
+    save_list_to_csv(training_progress['r_eta'], 'r_eta.csv')
+    save_list_to_csv(training_progress['delta_c_avg'], 'delta_c_avg.csv')
+    save_list_to_csv(training_progress['delta_m_avg'], 'delta_m_avg.csv')
+    save_list_to_csv(training_progress['decouple_loss'], 'decouple_loss.csv')
